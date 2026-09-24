@@ -1,0 +1,15 @@
+{
+  "name": "advanced-anime-bot",
+  "version": "2.0.0",
+  "description": "Advanced Discord Anime Bot with Dual Admin System for Render",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "mongoose": "^8.3.1"
+  }
+}
