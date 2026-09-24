@@ -1,0 +1,150 @@
+require('dotenv').config();
+const { 
+    Client, 
+    GatewayIntentBits, 
+    ActionRowBuilder, 
+    ButtonBuilder, 
+    ButtonStyle, 
+    StringSelectMenuBuilder, 
+    EmbedBuilder,
+    ModalBuilder,
+    TextInputBuilder,
+    TextInputStyle
+} = require('discord.js');
+const mongoose = require('mongoose');
+const keepAlive = require('./server');
+const Admin = require('./models/Admin');
+const Anime = require('./models/Anime');
+
+// تشغيل خادم الويب لـ Render
+keepAlive();
+
+// الاتصال بـ MongoDB
+mongoose.connect(process.env.MONGO_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+}).then(() => console.log('✅ Connected to MongoDB Atlas'))
+  .catch(err => console.error('❌ MongoDB Connection Error:', err));
+
+const client = new Client({ 
+    intents: [
+        GatewayIntentBits.Guilds, 
+        GatewayIntentBits.GuildMessages
+    ] 
+});
+
+client.once('ready', () => {
+    console.log(`🤖 Logged in as ${client.user.tag}!`);
+    client.user.setPresence({ activities: [{ name: '/admin-panel | v2.0' }], status: 'online' });
+});
+
+client.on('interactionCreate', async interaction => {
+    try {
+        // 1. أمر لوحة التحكم الإدارية /admin-panel
+        if (interaction.isChatInputCommand() && interaction.commandName === 'admin-panel') {
+            const adminCheck = await Admin.findOne({ userId: interaction.user.id });
+            if (!adminCheck) {
+                return interaction.reply({ content: '❌ عذراً، هذا الأمر مخصص للإدارة فقط.', ephemeral: true });
+            }
+
+            const isSenior = adminCheck.role === 'senior';
+
+            const embed = new EmbedBuilder()
+                .setColor(isSenior ? '#FFD700' : '#00AEFF')
+                .setTitle(`🛡️ لوحة التحكم الإدارية (${isSenior ? 'إدارة كبرى' : 'إدارة صغرى'})`)
+                .setDescription(
+                    isSenior 
+                    ? '• لديك الصلاحيات الكاملة: **إضافة، تعديل، وحذف** الأنميات والحلقات.' 
+                    : '• لديك صلاحيات **الإضافة فقط** (أنميات أو حلقات).\n• ⚠️ لا يمكنك التعديل أو الحذف نهائياً.'
+                );
+
+            const adminRows = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('adm_add_anime').setLabel('إضافة أنمي').setStyle(ButtonStyle.Success).setEmoji('➕'),
+                new ButtonBuilder().setCustomId('adm_add_ep').setLabel('إضافة حلقة').setStyle(ButtonStyle.Primary).setEmoji('📼'),
+                ...(isSenior ? [
+                    new ButtonBuilder().setCustomId('adm_edit_anime').setLabel('تعديل أنمي').setStyle(ButtonStyle.Secondary).setEmoji('✏️'),
+                    new ButtonBuilder().setCustomId('adm_delete_anime').setLabel('حذف أنمي').setStyle(ButtonStyle.Danger).setEmoji('🗑️')
+                ] : [])
+            );
+
+            return await interaction.reply({ embeds: [embed], components: [adminRows], ephemeral: true });
+        }
+
+        // 2. معالجة الأزرار الإدارية والتحقق الصارم من الصلاحيات
+        if (interaction.isButton() && interaction.customId.startsWith('adm_')) {
+            const action = interaction.customId;
+            const adminCheck = await Admin.findOne({ userId: interaction.user.id });
+            
+            if (!adminCheck) {
+                return interaction.reply({ content: '❌ انتهت الجلسة أو ليس لديك إذن.', ephemeral: true });
+            }
+
+            // منع الإدارة الصغرى من التعديل أو الحذف قطعياً
+            if ((action === 'adm_edit_anime' || action === 'adm_delete_anime') && adminCheck.role !== 'senior') {
+                return interaction.reply({ content: '🚨 **مخالفة صلاحيات!** حسابك مسجل كـ (إدارة صغرى)، وتستطيع الإضافة فقط.', ephemeral: true });
+            }
+
+            if (action === 'adm_add_anime') {
+                const modal = new ModalBuilder().setCustomId('modal_add_anime').setTitle('إضافة أنمي جديد');
+                modal.addComponents(
+                    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('anime_title').setLabel('اسم الأنمي').setStyle(TextInputStyle.Short).setRequired(true)),
+                    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('anime_desc').setLabel('قصة الأنمي').setStyle(TextInputStyle.Paragraph).setRequired(true)),
+                    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('anime_img').setLabel('رابط الصورة (Banner)').setStyle(TextInputStyle.Short).setRequired(true))
+                );
+                return await interaction.showModal(modal);
+            }
+
+            if (action === 'adm_delete_anime') {
+                const modal = new ModalBuilder().setCustomId('modal_delete_anime').setTitle('حذف أنمي');
+                modal.addComponents(
+                    new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('anime_title_del').setLabel('اكتب اسم الأنمي المراد حذفه بدقة').setStyle(TextInputStyle.Short).setRequired(true))
+                );
+                return await interaction.showModal(modal);
+            }
+        }
+
+        // 3. معالجة النوافذ المنبثقة (Modals) والحفظ في MongoDB
+        if (interaction.isModalSubmit()) {
+            if (interaction.customId === 'modal_add_anime') {
+                const title = interaction.fields.getTextInputValue('anime_title');
+                const desc = interaction.fields.getTextInputValue('anime_desc');
+                const img = interaction.fields.getTextInputValue('anime_img');
+
+                await Anime.create({
+                    animeId: Date.now().toString(),
+                    title,
+                    description: desc,
+                    imageUrl: img,
+                    episodes: [],
+                    createdBy: interaction.user.id
+                });
+
+                return await interaction.reply({ content: `✅ تم إضافة الأنمي **"${title}"** بنجاح!`, ephemeral: true });
+            }
+
+            if (interaction.customId === 'modal_delete_anime') {
+                const adminCheck = await Admin.findOne({ userId: interaction.user.id, role: 'senior' });
+                if (!adminCheck) {
+                    return await interaction.reply({ content: '❌ مرفوض: الحذف مخصص للإدارة الكبرى فقط.', ephemeral: true });
+                }
+
+                const titleToDel = interaction.fields.getTextInputValue('anime_title_del');
+                const deleted = await Anime.findOneAndDelete({ title: titleToDel });
+
+                if (!deleted) {
+                    return await interaction.reply({ content: `⚠️ لم يتم العثور على الأنمي بهذا الاسم.`, ephemeral: true });
+                }
+
+                return await interaction.reply({ content: `🗑️ تم حذف الأنمي **"${titleToDel}"** بواسطة الإدارة الكبرى.`, ephemeral: true });
+            }
+        }
+
+    } catch (error) {
+        console.error('⚠️ Error:', error);
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({ content: 'حدث خطأ داخلي أثناء تنفيذ الطلب.', ephemeral: true });
+        }
+    }
+});
+
+client.login(process.env.DISCORD_TOKEN);
